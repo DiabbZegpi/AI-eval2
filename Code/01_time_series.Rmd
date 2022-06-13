@@ -1,0 +1,61 @@
+---
+title: "01: time series"
+output: html_document
+date: 'r Sys.Date()'
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(modeltime)
+library(lubridate)
+
+theme_set(theme_bw())
+
+data_url <- "https://raw.githubusercontent.com/DiabbZegpi/AI-eval2/main/datos_precios_train.csv"
+data <- read_csv(data_url) |> 
+  mutate(Fecha = as_date(Fecha, format = "%d-%m-%Y")) |> 
+  arrange(Fecha)
+
+split <- initial_time_split(data, prop = 0.75)
+train_data <- training(split)
+test_data <- testing(split)
+```
+
+```{r}
+train_data |> 
+  pivot_longer(-Fecha) |> 
+  ggplot(aes(Fecha, value, color = name, group = name)) +
+  geom_line()
+```
+
+```{r}
+arima_spec <- arima_reg() |> 
+  set_engine("auto_arima")
+
+ultimo_arima <- arima_spec |> 
+  fit(Ultimo ~ Fecha, data = train_data[, c(1, 2)])
+
+maximo_arima <- arima_spec |> 
+  fit(Maximo ~ Fecha, data = train_data[, c(1, 3)])
+
+minimo_arima <- arima_spec |> 
+  fit(Minimo ~ Fecha, data = train_data[, c(1, 4)])
+```
+
+## Training set assessment
+
+```{r}
+evaluate_MSE <- function(truth, model, dataset) {
+  dataset <- dataset[, c("Fecha", truth)]
+  forecast <- predict(model, new_data = dataset) |> pluck(1)
+  error <- dataset[[truth]] - forecast
+  
+  return (mean(error ^ 2))
+}
+
+
+evaluate_MSE("Ultimo", ultimo_arima, train_data)
+evaluate_MSE("Maximo", maximo_arima, train_data)
+evaluate_MSE("Minimo", minimo_arima, train_data)
+```
