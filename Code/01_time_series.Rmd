@@ -2,13 +2,16 @@
 title: "01: time series"
 output: html_document
 date: 'r Sys.Date()'
+editor_options: 
+  chunk_output_type: inline
 ---
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 library(tidyverse)
 library(tidymodels)
 library(modeltime)
 library(lubridate)
+library(timetk)
 
 theme_set(theme_bw())
 
@@ -20,42 +23,177 @@ data <- read_csv(data_url) |>
 split <- initial_time_split(data, prop = 0.75)
 train_data <- training(split)
 test_data <- testing(split)
+
+folds <- time_series_cv(
+  train_data,
+  date_var = Fecha,
+  initial = 200,
+  assess = 50,
+  skip = 50,
+  cumulative = TRUE
+)
+
+# folds <- rolling_origin(
+#   train_data, 
+#   initial = 200, 
+#   assess = 50, 
+#   cumulative = TRUE, 
+#   skip = 50
+# )
+```
+
+```{r}
+folds |> 
+  tk_time_series_cv_plan() |> 
+  ggplot(aes(Fecha, Ultimo, color = .key)) +
+  geom_line() +
+  facet_wrap(~.id)
 ```
 
 ```{r}
 train_data |> 
-  pivot_longer(-Fecha) |> 
-  ggplot(aes(Fecha, value, color = name, group = name)) +
-  geom_line()
+  mutate(ultimo_lag = Ultimo - lag(Ultimo),
+         ultimo_lag_s = Ultimo - lag(Ultimo, n = 5),
+         ultimo_lag_c = ultimo_lag - lag(ultimo_lag, n = 5)) |>
+  pivot_longer(contains("ultimo_lag")) |> 
+  ggplot(aes(Fecha, value)) +
+  geom_line() +
+  facet_wrap(~name, ncol = 1)
+```
+
+## *ARIMA model specification*
+
+```{r}
+arima_spec <- arima_reg(
+  seasonal_period = 5,
+  non_seasonal_differences = 1,
+  seasonal_differences = 0,
+  non_seasonal_ar = tune(), 
+  non_seasonal_ma = tune(), 
+  seasonal_ar = tune(), 
+  seasonal_ma = tune()
+) |> 
+  set_engine("arima")
+
+
+arima_grid <- crossing(
+  non_seasonal_ar = 0:2,
+  non_seasonal_ma = 0:2,
+  seasonal_ar = 0:2,
+  seasonal_ma = 0:2
+)
+
+arima_ultimo_rec <- recipe(Ultimo ~ Fecha, data = train_data)
+arima_maximo_rec <- recipe(Maximo ~ Fecha, data = train_data)
+arima_minimo_rec <- recipe(Minimo ~ Fecha, data = train_data)
 ```
 
 ```{r}
-arima_spec <- arima_reg() |> 
-  set_engine("auto_arima")
+parallel_start(parallel::detectCores(logical = FALSE))
 
-ultimo_arima <- arima_spec |> 
-  fit(Ultimo ~ Fecha, data = train_data[, c(1, 2)])
+arima_ultimo_res <- tune_grid(
+  workflow() |> add_model(arima_spec) |> add_recipe(arima_ultimo_rec), 
+  resamples = folds, 
+  grid = arima_grid, 
+  metrics = metric_set(yardstick::mase, yardstick::rmse),
+  control = control_grid(save_pred = TRUE)
+)
 
-maximo_arima <- arima_spec |> 
-  fit(Maximo ~ Fecha, data = train_data[, c(1, 3)])
+arima_maximo_res <- tune_grid(
+  workflow() |> add_model(arima_spec) |> add_recipe(arima_maximo_rec), 
+  resamples = folds, 
+  grid = arima_grid, 
+  metrics = metric_set(yardstick::mase, yardstick::rmse),
+  control = control_grid(save_pred = TRUE)
+)
 
-minimo_arima <- arima_spec |> 
-  fit(Minimo ~ Fecha, data = train_data[, c(1, 4)])
+arima_minimo_res <- tune_grid(
+  workflow() |> add_model(arima_spec) |> add_recipe(arima_minimo_rec), 
+  resamples = folds, 
+  grid = arima_grid, 
+  metrics = metric_set(yardstick::mase, yardstick::rmse),
+  control = control_grid(save_pred = TRUE)
+)
+
+parallel_stop()
 ```
-
-## Training set assessment
 
 ```{r}
-evaluate_MSE <- function(truth, model, dataset) {
-  dataset <- dataset[, c("Fecha", truth)]
-  forecast <- predict(model, new_data = dataset) |> pluck(1)
-  error <- dataset[[truth]] - forecast
-  
-  return (mean(error ^ 2))
-}
-
-
-evaluate_MSE("Ultimo", ultimo_arima, train_data)
-evaluate_MSE("Maximo", maximo_arima, train_data)
-evaluate_MSE("Minimo", minimo_arima, train_data)
+arima_minimo_res |> 
+  collect_metrics() |> 
+  pivot_longer(all_of(1:4)) |> 
+  ggplot(aes(value, mean)) +
+  geom_point(aes(color = .metric)) +
+  scale_x_continuous(breaks = 0:2) +
+  facet_wrap(~name)
 ```
+
+## *Finalize ARIMA models*
+
+```{r}
+best_arima_ultimo <- arima_ultimo_res |> select_best("rmse")
+best_arima_maximo <- arima_maximo_res |> select_best("rmse")
+best_arima_minimo <- arima_minimo_res |> select_best("rmse")
+```
+
+```{r}
+arima_ultimo <- workflow() |> 
+  add_model(arima_spec) |> 
+  add_recipe(arima_ultimo_rec) |> 
+  finalize_workflow(best_arima_ultimo)
+
+arima_maximo <- workflow() |> 
+  add_model(arima_spec) |> 
+  add_recipe(arima_maximo_rec) |> 
+  finalize_workflow(best_arima_maximo)
+
+arima_minimo <- workflow() |> 
+  add_model(arima_spec) |> 
+  add_recipe(arima_minimo_rec) |> 
+  finalize_workflow(best_arima_minimo)
+```
+
+```{r}
+predictions <- tibble(
+  Fecha = test_data$Fecha,
+  last_fit(arima_ultimo, split) |> collect_predictions() |> select(Ultimo = .pred),
+  last_fit(arima_maximo, split) |> collect_predictions() |> select(Maximo = .pred),
+  last_fit(arima_minimo, split) |> collect_predictions() |> select(Minimo = .pred)
+)
+
+test_data |>
+  mutate(set = "truth") |> 
+  bind_rows(predictions |> mutate(set = "preds")) |> 
+  pivot_longer(all_of(2:4)) |> 
+  ggplot(aes(Fecha, value, color = set)) +
+  geom_line() +
+  facet_wrap(~name)
+```
+
+```{r}
+submission_url <- "https://raw.githubusercontent.com/DiabbZegpi/AI-eval2/main/datos_precio_prediction.csv"
+submission_sample <- read_csv(submission_url) |> 
+  mutate(Fecha = as_date(Fecha, format = "%d-%m-%Y"))
+
+submission_sample$Ultimo <- arima_ultimo |> 
+  fit(train_data) |> 
+  predict(new_data = submission_sample) |> 
+  pull(1)
+
+submission_sample$Maximo <- arima_maximo |> 
+  fit(train_data) |> 
+  predict(new_data = submission_sample) |> 
+  pull(1)
+
+submission_sample$Minimo <- arima_minimo |> 
+  fit(train_data) |> 
+  predict(new_data = submission_sample) |> 
+  pull(1)
+
+submission_sample$Fecha <- format(submission_sample$Fecha, "%d-%m-%Y")
+filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA.csv")
+write_csv(submission_sample, file = filename)
+```
+
+
+
