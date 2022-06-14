@@ -170,6 +170,8 @@ test_data |>
   facet_wrap(~name)
 ```
 
+## *Write submission*
+
 ```{r}
 submission_url <- "https://raw.githubusercontent.com/DiabbZegpi/AI-eval2/main/datos_precio_prediction.csv"
 submission_sample <- read_csv(submission_url) |> 
@@ -195,5 +197,110 @@ filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA.csv")
 write_csv(submission_sample, file = filename)
 ```
 
+# ARIMA with log transform
 
+```{r}
+train_data_log <- train_data |> 
+  mutate(across(where(is.numeric), log))
+
+log_folds <- time_series_cv(
+  train_data_log,
+  date_var = Fecha,
+  initial = 200,
+  assess = 50,
+  skip = 50,
+  cumulative = TRUE
+)
+
+arima_ultimo_rec_log <- recipe(Ultimo ~ Fecha, data = train_data_log) 
+arima_maximo_rec_log <- recipe(Maximo ~ Fecha, data = train_data_log)
+arima_minimo_rec_log <- recipe(Minimo ~ Fecha, data = train_data_log)
+
+ultimo_wf_log <- workflow() |> 
+  add_model(arima_spec) |> 
+  add_recipe(arima_ultimo_rec_log)
+
+maximo_wf_log <- workflow() |> 
+  add_model(arima_spec) |> 
+  add_recipe(arima_maximo_rec_log)
+
+minimo_wf_log <- workflow() |> 
+  add_model(arima_spec) |> 
+  add_recipe(arima_minimo_rec_log)
+```
+
+## *Tune grid*
+
+```{r}
+parallel_start(parallel::detectCores(logical = FALSE))
+
+arima_ultimo_res_log <- tune_grid(
+  ultimo_wf_log, 
+  resamples = log_folds, 
+  grid = arima_grid, 
+  metrics = metric_set(yardstick::mase, yardstick::rmse),
+  control = control_grid(save_pred = TRUE)
+)
+
+arima_maximo_res_log <- tune_grid(
+  maximo_wf_log,
+  resamples = log_folds, 
+  grid = arima_grid, 
+  metrics = metric_set(yardstick::mase, yardstick::rmse),
+  control = control_grid(save_pred = TRUE)
+)
+
+arima_minimo_res_log <- tune_grid(
+  minimo_wf_log,
+  resamples = log_folds, 
+  grid = arima_grid, 
+  metrics = metric_set(yardstick::mase, yardstick::rmse),
+  control = control_grid(save_pred = TRUE)
+)
+
+parallel_stop()
+```
+
+```{r}
+best_arima_ultimo_log <- arima_ultimo_res_log |> select_best("rmse")
+best_arima_maximo_log <- arima_maximo_res_log |> select_best("rmse")
+best_arima_minimo_log <- arima_minimo_res_log |> select_best("rmse")
+```
+
+## *Finalize workflow*
+
+```{r}
+arima_ultimo_log <- finalize_workflow(ultimo_wf_log, best_arima_ultimo) |> fit(train_data_log)
+arima_maximo_log <- finalize_workflow(maximo_wf_log, best_arima_maximo) |> fit(train_data_log)
+arima_minimo_log <- finalize_workflow(minimo_wf_log, best_arima_minimo) |> fit(train_data_log)
+```
+
+## *Make submissions*
+
+```{r}
+submission_sample <- read_csv(submission_url) |> 
+  mutate(Fecha = as_date(Fecha, format = "%d-%m-%Y"))
+
+submission_sample$Ultimo <- predict(arima_ultimo_log, new_data = submission_sample) |> 
+  pull(1) |> 
+  exp()
+
+submission_sample$Maximo <- predict(arima_maximo_log, new_data = submission_sample) |> 
+  pull(1) |>
+  exp()
+
+submission_sample$Minimo <- predict(arima_minimo_log, new_data = submission_sample) |> 
+  pull(1) |> 
+  exp()
+
+submission_sample$Fecha <- format(submission_sample$Fecha, "%d-%m-%Y")
+
+filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_log.csv")
+write_csv(submission_sample, file = filename)
+```
+
+
+```{r}
+
+```
 
