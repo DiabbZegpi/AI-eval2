@@ -197,6 +197,22 @@ filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA.csv")
 write_csv(submission_sample, file = filename)
 ```
 
+```{r}
+submission_sample |> 
+  pivot_longer(all_of(2:4)) |> 
+  ggplot(aes(Fecha, value, color = name)) +
+  geom_line()
+
+submission_sample <- submission_sample |> 
+  rowwise() |> 
+  mutate(Ultimo = if_else(Ultimo > Maximo, Maximo, Ultimo))
+
+submission_sample$Fecha <- format(submission_sample$Fecha, "%d-%m-%Y")
+filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_MAX_corrected.csv")
+write_csv(submission_sample, file = filename)
+```
+
+
 # ARIMA with log transform
 
 ```{r}
@@ -301,6 +317,12 @@ write_csv(submission_sample, file = filename)
 
 
 ```{r}
+submission_sample2 <- submission_sample |> 
+  rowwise() |> 
+  mutate(Ultimo = if_else(Ultimo > Maximo, Maximo, Ultimo)) |> 
+  ungroup()
 
+filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_log_MAX_corrected.csv")
+write_csv(submission_sample, file = filename)
 ```
 
