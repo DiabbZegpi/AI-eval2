@@ -1,0 +1,58 @@
+---
+title: "02 Exploratory analysis"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(modeltime)
+library(lubridate)
+library(timetk)
+
+data_url <- "https://raw.githubusercontent.com/DiabbZegpi/AI-eval2/main/datos_precios_train.csv"
+submission_url <- "https://raw.githubusercontent.com/DiabbZegpi/AI-eval2/main/datos_precio_prediction.csv"
+
+data <- read_csv(data_url) |> 
+  mutate(Fecha = dmy(Fecha)) |> 
+  arrange(Fecha)
+
+submission_sample <- read_csv(submission_url) |> 
+  mutate(Fecha = dmy(Fecha)) |> 
+  arrange(Fecha)
+```
+
+## *Plot configuration*
+
+```{r}
+knitr::opts_chunk$set(fig.width = 11)
+theme_set(theme_minimal())
+theme_update(
+  text = element_text(size = 14),
+  plot.title = element_text(hjust = 0.5, face = "bold")
+)
+```
+
+## *Data partition*
+
+```{r}
+splits <- initial_time_split(data, prop = 3/4)
+training_data <- training(splits)
+testing_data <- testing(splits)
+folds <- time_series_cv(
+  training_data,
+  date_var = Fecha,
+  initial = 
+)
+```
+
+```{r}
+ggplot(training_data, aes(x = Fecha)) +
+  geom_ribbon(aes(ymax = Maximo, ymin = Minimo),
+              fill = "salmon") +
+  geom_line(aes(y = Ultimo)) +
+  labs(title = "Stock time series (training data)")
+```
+
+The time series has a frequency of 5 days, with no evident trend nor seasonality. It is clear that the series aren't stationary.
