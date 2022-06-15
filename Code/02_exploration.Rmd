@@ -45,7 +45,9 @@ testing_data <- testing(splits)
 folds <- time_series_cv(
   training_data,
   date_var = Fecha,
-  initial = 
+  initial = 60, 
+  skip = 5, 
+  assess = 20
 )
 ```
 
@@ -75,7 +77,83 @@ plot_ts(training_data |> filter(Fecha < "2016-01-01")) +
   scale_x_date(date_breaks = "1 month", date_labels = "%b")
 ```
 
+Which order of differentiation would stationarize the series characteristics? 
+
 ```{r}
-plot_ts(training_data |> mutate(Ultimo = Ultimo - lag(Ultimo)), ribbon = FALSE)
+library(patchwork)
+p1 <- plot_ts(training_data |> mutate(Ultimo = Ultimo - lag(Ultimo)), ribbon = FALSE)
+p2 <- plot_ts(training_data |> mutate(Ultimo = Ultimo - lag(Ultimo, 5)), ribbon = FALSE)
+p3 <- plot_ts(training_data |> mutate(Ultimo = Ultimo - lag(Ultimo) - lag(Ultimo, 5)), ribbon = FALSE)
+p4 <- plot_ts(training_data |> mutate(Ultimo = Ultimo - lag(Ultimo) - lag(Ultimo)), ribbon = FALSE)
+
+p1 + p2 + p3 + p4 + plot_layout(ncol = 2) + plot_annotation(tag_levels = "I")
 ```
+
+Only 1st order non-seasonal differentiation is necessary to make the series staationary.
+
+## Visualizing cross-validation plan
+
+```{r}
+folds |> 
+  tk_time_series_cv_plan() |> 
+  filter(parse_number(.id) <= 20) |> 
+  plot_ts(ribbon = FALSE) +
+  aes(color = .key) +
+  scale_color_brewer(palette = "Dark2") +
+  facet_wrap(~.id) +
+  guides(color = "none")
+```
+
+Apparently, for the first year of data, stock prices go up for the second half of the year, while oscillating at the beginning of the period.
+
+## *Fit GLUON deep learning models*
+
+```{r}
+library(modeltime.gluonts)
+
+gluon_spec <- deep_ar(
+  id = "id",
+  freq = "B",
+  prediction_length = 264, 
+  lookback_length = NULL, 
+  cell_type = "lstm",
+  num_layers = 3, 
+  num_cells = 40,
+  dropout = 0.4,
+  epochs = 20,
+  batch_size = 16,
+  learn_rate = 0.001
+) |> 
+  set_engine("gluonts_deepar")
+
+gluon_fit_ultimo <- gluon_spec |> 
+  fit(Ultimo ~ Fecha + id, data = training_data |> mutate(id = "id"))
+
+gluon_fit_maximo <- gluon_spec |> 
+  fit(Maximo ~ Fecha + id, data = training_data |> mutate(id = "id"))
+```
+
+```{r}
+submission_sample |> pivot_longer(-Fecha, names_to = "id", values_to = "stock")
+
+gluon_preds <- gluon_fit |> 
+  modeltime_table() |> 
+  modeltime_calibrate(gluon_test) |> 
+  modeltime_forecast(
+    new_data = submission_sample |> 
+      pivot_longer(-Fecha, names_to = "id", values_to = "stock"),
+    actual_data = gluon_data,
+    keep_data = TRUE
+  ) 
+
+preds_to_submit <- gluon_preds |> 
+  filter(.key == "prediction") |> 
+  select(Fecha, .value, id) |> 
+  pivot_wider(names_from = id, values_from = .value) 
+
+preds_to_submit$Fecha <- format(preds_to_submit$Fecha, "%d-%m-%Y")
+filename <- paste0("../Submissions/", Sys.Date(), "_GLUON_AR.csv")
+write_csv(preds_to_submit, file = filename)
+```
+
 

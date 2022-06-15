@@ -212,7 +212,6 @@ filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_MAX_corrected.csv")
 write_csv(submission_sample, file = filename)
 ```
 
-
 # ARIMA with log transform
 
 ```{r}
@@ -315,7 +314,6 @@ filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_log.csv")
 write_csv(submission_sample, file = filename)
 ```
 
-
 ```{r}
 submission_sample2 <- submission_sample |> 
   rowwise() |> 
@@ -325,7 +323,6 @@ submission_sample2 <- submission_sample |>
 filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_log_MAX_corrected.csv")
 write_csv(submission_sample, file = filename)
 ```
-
 
 # ARIMA-boost
 
@@ -471,4 +468,3 @@ submission_sample_c <- submission_sample |>
 filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_XGBoost_Corrected.csv")
 write_csv(submission_sample, file = filename)
 ```
-
