@@ -30,7 +30,9 @@ knitr::opts_chunk$set(fig.width = 11)
 theme_set(theme_minimal())
 theme_update(
   text = element_text(size = 14),
-  plot.title = element_text(hjust = 0.5, face = "bold")
+  plot.title = element_text(hjust = 0.5, face = "bold"),
+  plot.subtitle = element_text(hjust = 0.5),
+  panel.grid.minor = element_blank()
 )
 ```
 
@@ -48,11 +50,32 @@ folds <- time_series_cv(
 ```
 
 ```{r}
-ggplot(training_data, aes(x = Fecha)) +
-  geom_ribbon(aes(ymax = Maximo, ymin = Minimo),
-              fill = "salmon") +
-  geom_line(aes(y = Ultimo)) +
-  labs(title = "Stock time series (training data)")
+plot_ts <- function(data, ribbon = TRUE) {
+ date_var <- map_lgl(data, is.Date) |> which() |> names()
+  data_points <- nrow(data)
+  range_dates <- data |> pull({{ date_var }}) |> range()
+  ttl_lab <- sprintf("Training data: %i observations", data_points)
+  subttl_lab <- sprintf("From %s to %s", range_dates[1], range_dates[2])
+  
+  p <- ggplot(data, aes_string(x = date_var)) +
+    geom_line(aes(y = Ultimo)) +
+    labs(title = ttl_lab, subtitle = subttl_lab,
+         x = "Date", y = "Stock price")
+  
+  if (ribbon) p + geom_ribbon(aes(ymax = Maximo, ymin = Minimo), fill = "cyan4", alpha = 0.5) else p
+}
+
+plot_ts(training_data)
 ```
 
 The time series has a frequency of 5 days, with no evident trend nor seasonality. It is clear that the series aren't stationary.
+
+```{r}
+plot_ts(training_data |> filter(Fecha < "2016-01-01")) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b")
+```
+
+```{r}
+plot_ts(training_data |> mutate(Ultimo = Ultimo - lag(Ultimo)), ribbon = FALSE)
+```
+
