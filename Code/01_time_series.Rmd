@@ -326,3 +326,149 @@ filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_log_MAX_corrected.csv"
 write_csv(submission_sample, file = filename)
 ```
 
+
+# ARIMA-boost
+
+```{r}
+arima_xgb_spec <- arima_boost(
+  seasonal_period = 5,
+  non_seasonal_differences = 1,
+  seasonal_differences = 1,
+  non_seasonal_ar = tune(),
+  non_seasonal_ma = tune(),
+  seasonal_ar = tune(),
+  seasonal_ma = tune(),
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune(),
+  tree_depth = tune(),
+  learn_rate = tune()
+) |> 
+  set_engine("arima_xgboost")
+
+ultimo_rec <- recipe(Ultimo ~ Fecha, data = train_data) |> 
+  step_timeseries_signature(Fecha) |> 
+  step_rm(contains("xts"), contains("hour"), contains("minute"), contains("second")) |> 
+  step_fourier(Fecha, period = 5, K = 3) |> 
+  step_corr(all_numeric_predictors(), threshold = 0.8) |> 
+  step_dummy(all_nominal_predictors())
+
+maximo_rec <- recipe(Maximo ~ Fecha, data = train_data) |> 
+  step_timeseries_signature(Fecha) |> 
+  step_rm(contains("xts"), contains("hour"), contains("minute"), contains("second")) |> 
+  step_fourier(Fecha, period = 5, K = 3) |> 
+  step_corr(all_numeric_predictors(), threshold = 0.8) |> 
+  step_dummy(all_nominal_predictors())
+
+minimo_rec <- recipe(Minimo ~ Fecha, data = train_data) |> 
+  step_timeseries_signature(Fecha) |> 
+  step_rm(contains("xts"), contains("hour"), contains("minute"), contains("second")) |> 
+  step_fourier(Fecha, period = 5, K = 3) |> 
+  step_corr(all_numeric_predictors(), threshold = 0.8) |> 
+  step_dummy(all_nominal_predictors())
+
+ultimo_wf <- workflow() |> 
+  add_model(arima_xgb_spec) |> 
+  add_recipe(ultimo_rec)
+
+maximo_wf <- ultimo_wf |> update_recipe(maximo_rec)
+minimo_wf <- ultimo_wf |> update_recipe(minimo_rec)
+```
+
+```{r}
+set.seed(1234)
+grid_arima_xgb <- grid_random(
+  non_seasonal_ar(range = c(0L, 3L)),
+  non_seasonal_ma(range = c(0L, 3L)),
+  seasonal_ar(),
+  seasonal_ma(),
+  mtry(range = c(5L, 30L)),
+  trees(range = c(50L, 300L)),
+  min_n(),
+  tree_depth(),
+  learn_rate(range = c(-5, -1)), 
+  size = 100
+)
+```
+
+```{r}
+parallel_start(parallel::detectCores(logical = FALSE))
+
+ultimo_res <- tune_grid(
+  ultimo_wf, 
+  resamples = folds, 
+  grid = grid_arima_xgb, 
+  metrics = metric_set(yardstick::mase, yardstick::rmse)
+)
+
+maximo_res <- tune_grid(
+  maximo_wf,
+  resamples = folds, 
+  grid = grid_arima_xgb, 
+  metrics = metric_set(yardstick::mase, yardstick::rmse)
+)
+
+minimo_res <- tune_grid(
+  minimo_wf,
+  resamples = folds, 
+  grid = grid_arima_xgb, 
+  metrics = metric_set(yardstick::mase, yardstick::rmse)
+)
+
+parallel_stop()
+```
+
+```{r fig.width=11}
+bind_rows(
+  collect_metrics(ultimo_res) |> mutate(target = "Ultimo"),
+  collect_metrics(maximo_res) |> mutate(target = "Maximo"),
+  collect_metrics(minimo_res) |> mutate(target = "Minimo")
+) |> 
+  pivot_longer(all_of(1:9)) |>
+  filter(.metric == "rmse") |> 
+  ggplot(aes(value, mean ^ 2)) +
+  geom_point(aes(color = target)) +
+  facet_wrap(~name, scales = "free_x")
+```
+
+```{r}
+final_wf_ultimo <- finalize_workflow(ultimo_wf, select_best(ultimo_res, metric = "rmse"))
+final_wf_maximo <- finalize_workflow(maximo_wf, select_best(maximo_res, metric = "rmse"))
+final_wf_minimo <- finalize_workflow(minimo_wf, select_best(minimo_res, metric = "rmse"))
+
+ultimo_lf <- last_fit(final_wf_ultimo, split)
+maximo_lf <- last_fit(final_wf_maximo, split)
+minimo_lf <- last_fit(final_wf_minimo, split)
+
+submission_url <- "https://raw.githubusercontent.com/DiabbZegpi/AI-eval2/main/datos_precio_prediction.csv"
+submission_sample <- read_csv(submission_url) |> 
+  mutate(Fecha = as_date(Fecha, format = "%d-%m-%Y"))
+
+submission_sample$Ultimo <- predict(ultimo_lf |> extract_workflow(), new_data = submission_sample) |> pull(.pred)
+submission_sample$Maximo <- predict(maximo_lf |> extract_workflow(), new_data = submission_sample) |> pull(.pred)
+submission_sample$Minimo <- predict(minimo_lf |> extract_workflow(), new_data = submission_sample) |> pull(.pred)
+submission_sample$Fecha <- format(submission_sample$Fecha, "%d-%m-%Y")
+
+filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_XGBoost.csv")
+write_csv(submission_sample, file = filename)
+```
+
+## *Correct predictions by boundaries*
+
+```{r}
+submission_sample |> 
+  pivot_longer(where(is.numeric)) |> 
+  ggplot(aes(dmy(Fecha), value, color = name)) +
+  geom_line()
+```
+
+```{r}
+submission_sample_c <- submission_sample |> 
+  rowwise() |> 
+  mutate(Ultimo = median(Minimo, Maximo)) |> 
+  ungroup()
+
+filename <- paste0("../Submissions/", Sys.Date(), "_ARIMA_XGBoost_Corrected.csv")
+write_csv(submission_sample, file = filename)
+```
+
