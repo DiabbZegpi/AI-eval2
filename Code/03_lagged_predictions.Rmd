@@ -1,0 +1,174 @@
+---
+title: "03 Prediction with lag"
+author: "Diabb Zegpi D."
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(modeltime)
+library(lubridate)
+library(timetk)
+library(modeltime.ensemble)
+
+data_url <- "https://raw.githubusercontent.com/DiabbZegpi/AI-eval2/main/datos_precios_train.csv"
+submission_url <- "https://raw.githubusercontent.com/DiabbZegpi/AI-eval2/main/datos_precio_prediction.csv"
+
+data <- read_csv(data_url) |> 
+  mutate(Fecha = dmy(Fecha)) |> 
+  arrange(Fecha)
+
+submission_sample <- read_csv(submission_url) |> 
+  mutate(Fecha = dmy(Fecha)) |> 
+  arrange(Fecha)
+```
+
+```{r}
+thematic::thematic_on()
+theme_update(
+  text = element_text(size = 16),
+  panel.grid.minor = element_blank()
+)
+```
+
+```{r fig.width=11}
+ggplot(data = data, aes(x = Fecha, y = Ultimo)) +
+  geom_ribbon(aes(ymin = Minimo, ymax = Maximo), fill = "gray", alpha = 1) +
+  geom_line(aes(color = Fecha < "2018-01-01"), show.legend = FALSE) +
+  labs(title = "Precio histórico de la acción", y = "Precio (USD)") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  geom_smooth(method = "loess", formula = y ~ x, span = 0.5)
+```
+
+```{r}
+FORECAST_HORIZON <- nrow(submission_sample)
+
+data_extended_maximo <- data |> 
+  pivot_longer(-Fecha, names_to = "id") |>
+  filter(id == "Maximo") |> 
+  group_by(id) |> 
+  future_frame(
+    .length_out = FORECAST_HORIZON * 2, 
+    .date_var = Fecha,
+    .bind_data = TRUE
+  ) |> 
+  ungroup() 
+
+data_extended_maximo |> summarise(max(Fecha))
+```
+
+```{r}
+lag_transformer_grouped <- function(input_data) {
+  input_data |> 
+    group_by(id) |> 
+    tk_augment_lags(value, .lags = 1:FORECAST_HORIZON) |> 
+    ungroup()
+}
+
+data_lags <- data_extended_maximo |> 
+  lag_transformer_grouped()
+
+data_lags |> tail(FORECAST_HORIZON)
+```
+
+## Data split
+
+```{r}
+train_data <- data_lags |> drop_na()
+future_data <- data_lags |> filter(is.na(value))
+```
+
+```{r}
+model_fit_glmnet <- linear_reg(penalty = 0.01, mixture = 0.5) |> 
+  set_engine("glmnet") |> 
+  fit(value ~ ., data = train_data)
+
+model_fit_xgboost <- boost_tree("regression", learn_rate = 0.35) |> 
+  set_engine("xgboost") |> 
+  fit(value ~ ., data = train_data)
+```
+
+```{r}
+recursive_model_panel <- modeltime_table(
+  model_fit_glmnet,
+  model_fit_xgboost
+) |> 
+  ensemble_weighted(loadings = c(4, 6)) |> 
+  recursive(
+    transform = lag_transformer_grouped,
+    train_tail = panel_tail(train_data, id, FORECAST_HORIZON),
+    id = "id"
+  )
+
+recursive_model_panel
+```
+
+```{r}
+model_tbl <- modeltime_table(recursive_model_panel)
+model_tbl
+```
+
+## Forecast the future
+
+```{r}
+forecast <- model_tbl |> 
+  modeltime_forecast(
+    new_data = future_data,
+    actual_data = data_lags,
+    keep_data = TRUE
+  ) 
+
+forecast |> 
+  filter(.key == "prediction") |> 
+  ggplot(aes(Fecha, .value, color = id)) +
+  geom_line() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+to_submit <- forecast |> 
+  filter(.key == "prediction") |> 
+  select(Fecha, id, .value) |> 
+  pivot_wider(names_from = "id", values_from = ".value") |> 
+  relocate(Ultimo, .after = Fecha)
+```
+
+
+```{r}
+format(submission_sample$Fecha, "%d-%m-%Y") == to_submit$Fecha
+```
+
+```{r}
+to_submit_joined <- submission_sample |> 
+  select(Fecha) |> 
+  left_join(to_submit, by = c("Fecha")) |> 
+  mutate(Fecha = format(Fecha, "%d-%m-%Y"))
+
+filename <- paste0("../Submissions/", Sys.Date(), "modeltime_ensemble_1.csv")
+write_csv(to_submit_joined, file = filename)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
